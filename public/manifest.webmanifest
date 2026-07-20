@@ -2,9 +2,11 @@
   "name": "棱石图鉴 · Prism Stone Collection",
   "short_name": "棱石图鉴",
   "description": "查找、勾选并管理你的美妙旋律棱石收藏。",
-  "start_url": "/",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#f8f4ff",
   "theme_color": "#f8f4ff",
-  "icons": [{ "src": "/prism-icon.png", "sizes": "any", "type": "image/png", "purpose": "any maskable" }]
+  "icons": [{ "src": "./prism-icon.png", "sizes": "any", "type": "image/png", "purpose": "any maskable" }]
 }
