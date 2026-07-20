@@ -2,6 +2,8 @@
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
+type SignedInUser = { displayName: string; email: string };
+
 type Stone = {
   id: string;
   type: string;
@@ -97,12 +99,27 @@ async function writeDatabase(key: string, value: unknown) {
 const shownCode = (stone: Stone, record?: CollectionRecord) => record?.customCode?.trim() || stone.code;
 const shownName = (stone: Stone, record?: CollectionRecord) => record?.customName?.trim() || stone.name;
 
+function mergeCollections(local: Record<string, CollectionRecord>, cloud: Record<string, CollectionRecord>) {
+  const merged = { ...cloud };
+  for (const [id, localRecord] of Object.entries(local)) {
+    const cloudRecord = cloud[id];
+    if (!cloudRecord || (localRecord.updatedAt || "") >= (cloudRecord.updatedAt || "")) merged[id] = localRecord;
+  }
+  return merged;
+}
+
+function mergeCustomStones(local: Stone[], cloud: Stone[]) {
+  const merged = new Map(cloud.map((stone) => [stone.id, stone]));
+  local.forEach((stone) => merged.set(stone.id, stone));
+  return Array.from(merged.values());
+}
+
 function safeImage(url: string) {
   if (!url) return "";
   return url.replace(/^http:/, "https:");
 }
 
-export function PrismAtlas() {
+export function PrismAtlas({ user }: { user: SignedInUser | null }) {
   const [stones, setStones] = useState<Stone[]>([]);
   const [customStones, setCustomStones] = useState<Stone[]>([]);
   const [collection, setCollection] = useState<Record<string, CollectionRecord>>({});
@@ -119,7 +136,10 @@ export function PrismAtlas() {
   const [showFilters, setShowFilters] = useState(false);
   const [newStoneOpen, setNewStoneOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
+  const [syncStatus, setSyncStatus] = useState<"local" | "syncing" | "synced" | "error">(user ? "syncing" : "local");
   const importRef = useRef<HTMLInputElement>(null);
+  const initialSyncDone = useRef(false);
+  const syncing = useRef(false);
 
   useEffect(() => {
     const localCollection = readLocal<Record<string, CollectionRecord>>(STORE_KEY, {});
@@ -143,6 +163,44 @@ export function PrismAtlas() {
     window.addEventListener("beforeinstallprompt", onInstall);
     return () => window.removeEventListener("beforeinstallprompt", onInstall);
   }, []);
+
+  useEffect(() => {
+    if (!ready || !user || initialSyncDone.current) return;
+    initialSyncDone.current = true;
+    syncing.current = true;
+    setSyncStatus("syncing");
+    fetch("/api/sync")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("sync failed");
+        return response.json();
+      })
+      .then(async ({ snapshot }) => {
+        const mergedCollection = mergeCollections(collection, snapshot?.collection || {});
+        const mergedCustom = mergeCustomStones(customStones, snapshot?.customStones || []);
+        setCollection(mergedCollection);
+        setCustomStones(mergedCustom);
+        const response = await fetch("/api/sync", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ collection: mergedCollection, customStones: mergedCustom }) });
+        if (!response.ok) throw new Error("sync failed");
+        setSyncStatus("synced");
+      })
+      .catch(() => setSyncStatus("error"))
+      .finally(() => { syncing.current = false; });
+  }, [ready, user]);
+
+  useEffect(() => {
+    if (!ready || !user || !initialSyncDone.current || syncing.current) return;
+    setSyncStatus("syncing");
+    const timer = window.setTimeout(async () => {
+      syncing.current = true;
+      try {
+        const response = await fetch("/api/sync", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ collection, customStones }) });
+        if (!response.ok) throw new Error("sync failed");
+        setSyncStatus("synced");
+      } catch { setSyncStatus("error"); }
+      finally { syncing.current = false; }
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [collection, customStones, ready, user]);
 
   useEffect(() => {
     if (ready) {
@@ -269,6 +327,17 @@ export function PrismAtlas() {
     else setToast("请在浏览器菜单中选择“添加到主屏幕”");
   };
 
+  const syncNow = async () => {
+    if (!user || syncing.current) return;
+    syncing.current = true; setSyncStatus("syncing");
+    try {
+      const response = await fetch("/api/sync", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ collection, customStones }) });
+      if (!response.ok) throw new Error("sync failed");
+      setSyncStatus("synced"); setToast("云端收藏已同步");
+    } catch { setSyncStatus("error"); setToast("同步失败，请稍后重试"); }
+    finally { syncing.current = false; }
+  };
+
   if (!ready) return <Loading />;
 
   return (
@@ -326,7 +395,7 @@ export function PrismAtlas() {
 
       {nav === "stats" && <StatsView stones={allStones} collection={collection} onType={(value) => { setType(value); setStatus("all"); setNav("catalog"); }} />}
       {nav === "missing" && <MissingView stones={allStones} collection={collection} onOpen={setSelected} onCopy={copyMissing} />}
-      {nav === "settings" && <SettingsView owned={ownedCount} total={allStones.length} favorite={favoriteCount} onExport={exportData} onImport={() => importRef.current?.click()} onInstall={install} onAdd={() => setNewStoneOpen(true)} onReset={() => { if (confirm("确定清空这台设备上的收藏记录吗？")) { setCollection({}); setToast("收藏记录已清空"); } }} />}
+      {nav === "settings" && <SettingsView user={user} syncStatus={syncStatus} owned={ownedCount} total={allStones.length} favorite={favoriteCount} onSync={syncNow} onExport={exportData} onImport={() => importRef.current?.click()} onInstall={install} onAdd={() => setNewStoneOpen(true)} onReset={() => { if (confirm("确定清空收藏记录吗？登录状态下也会同步清空云端记录。")) { setCollection({}); setToast("收藏记录已清空"); } }} />}
 
       <nav className="bottom-nav" aria-label="主要导航">
         <NavButton active={nav === "catalog"} icon="◇" label="图鉴" onClick={() => setNav("catalog")} />
@@ -403,13 +472,15 @@ function MissingView({ stones, collection, onOpen, onCopy }: { stones: Stone[]; 
   return <section className="view-page"><div className="view-title"><p>WISHLIST</p><h2>缺少清单</h2><span>按编号整理，交换和补齐收藏会更轻松。</span></div><button className="primary-action" onClick={onCopy}>复制全部缺少编号</button><div className="compact-list">{missing.slice(0, 300).map((stone) => <button key={stone.id} onClick={() => onOpen(stone)}><span className={`category-glyph type-${stone.type}`}>{TYPE_GLYPHS[stone.type]}</span><div><strong>{shownCode(stone, collection[stone.id])}</strong><p>{shownName(stone, collection[stone.id])}</p></div><span>›</span></button>)}</div>{missing.length > 300 && <p className="list-note">为保持手机流畅，这里先显示前 300 项；图鉴页可以查看全部。</p>}</section>;
 }
 
-function SettingsView({ owned, total, favorite, onExport, onImport, onInstall, onAdd, onReset }: { owned: number; total: number; favorite: number; onExport: () => void; onImport: () => void; onInstall: () => void; onAdd: () => void; onReset: () => void }) {
-  return <section className="view-page"><div className="view-title"><p>MY ATLAS</p><h2>图鉴与数据</h2><span>记录使用持久本地数据库保存；换浏览器或设备前请导出备份。</span></div><div className="profile-card"><div className="profile-gem">♥</div><div><strong>我的棱石收藏</strong><p>{owned}/{total} 已拥有 · {favorite} 枚心愿</p></div></div><div className="settings-list">
+function SettingsView({ user, syncStatus, owned, total, favorite, onSync, onExport, onImport, onInstall, onAdd, onReset }: { user: SignedInUser | null; syncStatus: "local" | "syncing" | "synced" | "error"; owned: number; total: number; favorite: number; onSync: () => void; onExport: () => void; onImport: () => void; onInstall: () => void; onAdd: () => void; onReset: () => void }) {
+  const syncText = { local: "仅保存在这台设备", syncing: "正在同步…", synced: "云端已同步", error: "同步失败，点此重试" }[syncStatus];
+  return <section className="view-page"><div className="view-title"><p>MY ATLAS</p><h2>图鉴与数据</h2><span>{user ? "已启用云端同步，不同设备登录同一账号即可恢复。" : "目前为本机模式；登录后可以跨浏览器和设备同步。"}</span></div><div className="profile-card"><div className="profile-gem">♥</div><div><strong>{user?.displayName || "我的棱石收藏"}</strong><p>{owned}/{total} 已拥有 · {favorite} 枚心愿</p><small className={`sync-state ${syncStatus}`}>{syncText}</small></div></div><div className="settings-list">
+    {user ? <><button onClick={onSync}><span>☁</span><div><b>立即同步云端</b><small>{syncText}</small></div><i>›</i></button><a href="/signout-with-chatgpt?return_to=%2F"><span>↪</span><div><b>退出同步账号</b><small>{user.email}</small></div><i>›</i></a></> : <a href="/signin-with-chatgpt?return_to=%2F"><span>☁</span><div><b>使用 ChatGPT 账号同步</b><small>登录后跨设备恢复收藏</small></div><i>›</i></a>}
     <button onClick={onInstall}><span>⌂</span><div><b>安装到手机桌面</b><small>像 App 一样快速打开</small></div><i>›</i></button>
     <button onClick={onExport}><span>⇩</span><div><b>导出收藏备份</b><small>保存勾选、数量与备注</small></div><i>›</i></button>
     <button onClick={onImport}><span>⇧</span><div><b>导入收藏备份</b><small>换手机后恢复收藏</small></div><i>›</i></button>
     <button onClick={onAdd}><span>＋</span><div><b>添加自定义棱石</b><small>补录图鉴之外的版本</small></div><i>›</i></button>
-  </div><button className="danger-action" onClick={onReset}>清空本机收藏记录</button><p className="privacy-note">无账号、无追踪。每位收藏者打开分享网址后，都拥有一份独立的本地图鉴。</p><p className="source-note">非官方收藏工具。棱石资料与图片链接整理自 <a href="https://puritirizumu.fandom.com/wiki/Prism_Stone_Master_List" target="_blank" rel="noreferrer">Pretty Rhythm Wiki</a>，相关作品及图片权利归原权利人所有。</p></section>;
+  </div><button className="danger-action" onClick={onReset}>清空收藏记录</button><p className="privacy-note">未登录时数据只留在本机；登录后收藏数据按账号隔离并同步到云端。仍建议定期导出备份。</p><p className="source-note">非官方收藏工具。棱石资料与图片链接整理自 <a href="https://puritirizumu.fandom.com/wiki/Prism_Stone_Master_List" target="_blank" rel="noreferrer">Pretty Rhythm Wiki</a>，相关作品及图片权利归原权利人所有。</p></section>;
 }
 
 function NewStoneSheet({ onClose, onSave }: { onClose: () => void; onSave: (stone: Stone) => void }) {
