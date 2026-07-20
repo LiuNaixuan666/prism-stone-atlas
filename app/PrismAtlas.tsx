@@ -326,6 +326,7 @@ function DetailSheet({ stone, record = { owned: false }, onClose, onUpdate, onDe
       <label className="wide">获得日期<input type="date" value={record.acquired || ""} onChange={(e) => onUpdate({ acquired: e.target.value })} /></label>
       <label className="wide">收藏备注<textarea value={record.note || ""} onChange={(e) => onUpdate({ note: e.target.value })} placeholder="来源、价格、交换对象……" /></label>
     </div>
+    {!stone.custom && <a className="source-link" href={`https://puritirizumu.fandom.com/wiki/${encodeURIComponent(stone.name.replaceAll(" ", "_"))}`} target="_blank" rel="noreferrer">在 Pretty Rhythm Wiki 查看资料来源 ↗</a>}
     {stone.custom && <button className="danger-link" onClick={onDeleteCustom}>删除这个自定义条目</button>}
   </section></div>;
 }
@@ -354,7 +355,7 @@ function SettingsView({ owned, total, favorite, onExport, onImport, onInstall, o
     <button onClick={onExport}><span>⇩</span><div><b>导出收藏备份</b><small>保存勾选、数量与备注</small></div><i>›</i></button>
     <button onClick={onImport}><span>⇧</span><div><b>导入收藏备份</b><small>换手机后恢复收藏</small></div><i>›</i></button>
     <button onClick={onAdd}><span>＋</span><div><b>添加自定义棱石</b><small>补录图鉴之外的版本</small></div><i>›</i></button>
-  </div><button className="danger-action" onClick={onReset}>清空本机收藏记录</button><p className="privacy-note">无账号、无追踪。每位收藏者打开分享网址后，都拥有一份独立的本地图鉴。</p></section>;
+  </div><button className="danger-action" onClick={onReset}>清空本机收藏记录</button><p className="privacy-note">无账号、无追踪。每位收藏者打开分享网址后，都拥有一份独立的本地图鉴。</p><p className="source-note">非官方收藏工具。棱石资料与图片链接整理自 <a href="https://puritirizumu.fandom.com/wiki/Prism_Stone_Master_List" target="_blank" rel="noreferrer">Pretty Rhythm Wiki</a>，相关作品及图片权利归原权利人所有。</p></section>;
 }
 
 function NewStoneSheet({ onClose, onSave }: { onClose: () => void; onSave: (stone: Stone) => void }) {
