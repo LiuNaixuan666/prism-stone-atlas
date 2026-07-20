@@ -137,7 +137,12 @@ function safeImage(url: string) {
   return url.replace(/^http:/, "https:");
 }
 
-export function PrismAtlas({ user }: { user: SignedInUser | null }) {
+function appAssetUrl(path: string) {
+  if (typeof document === "undefined") return `/${path.replace(/^\/+/, "")}`;
+  return new URL(path.replace(/^\/+/, ""), document.baseURI).toString();
+}
+
+export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser | null; cloudEnabled?: boolean }) {
   const [stones, setStones] = useState<Stone[]>([]);
   const [customStones, setCustomStones] = useState<Stone[]>([]);
   const [collection, setCollection] = useState<Record<string, CollectionRecord>>({});
@@ -154,7 +159,7 @@ export function PrismAtlas({ user }: { user: SignedInUser | null }) {
   const [showFilters, setShowFilters] = useState(false);
   const [newStoneOpen, setNewStoneOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
-  const [syncStatus, setSyncStatus] = useState<"local" | "syncing" | "synced" | "error">(user ? "syncing" : "local");
+  const [syncStatus, setSyncStatus] = useState<"local" | "syncing" | "synced" | "error">(cloudEnabled && user ? "syncing" : "local");
   const [cloudAvailable, setCloudAvailable] = useState(false);
   const [cloudUpdatedAt, setCloudUpdatedAt] = useState<string | null>(null);
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
@@ -165,7 +170,7 @@ export function PrismAtlas({ user }: { user: SignedInUser | null }) {
     const localCollection = readLocal<Record<string, CollectionRecord>>(STORE_KEY, {});
     const localCustom = readLocal<Stone[]>(CUSTOM_KEY, []);
     Promise.all([
-      fetch("/data/prism-stones.json").then((r) => r.json()),
+      fetch(appAssetUrl("data/prism-stones.json")).then((r) => r.json()),
       readDatabase<Record<string, CollectionRecord>>(STORE_KEY, localCollection),
       readDatabase<Stone[]>(CUSTOM_KEY, localCustom),
       readDatabase<RecoverySnapshot[]>(RECOVERY_KEY, []),
@@ -177,7 +182,7 @@ export function PrismAtlas({ user }: { user: SignedInUser | null }) {
       setReady(true);
     });
     navigator.storage?.persist?.().catch(() => false);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register(appAssetUrl("sw.js")).catch(() => undefined);
     const onInstall = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event);
@@ -187,7 +192,7 @@ export function PrismAtlas({ user }: { user: SignedInUser | null }) {
   }, []);
 
   useEffect(() => {
-    if (!ready || !user) return;
+    if (!ready || !cloudEnabled || !user) return;
     let cancelled = false;
     fetch("/api/sync")
       .then(async (response) => {
@@ -202,7 +207,7 @@ export function PrismAtlas({ user }: { user: SignedInUser | null }) {
       })
       .catch(() => { if (!cancelled) setSyncStatus("error"); });
     return () => { cancelled = true; };
-  }, [ready, user]);
+  }, [cloudEnabled, ready, user]);
 
   useEffect(() => {
     if (ready) {
@@ -451,7 +456,7 @@ export function PrismAtlas({ user }: { user: SignedInUser | null }) {
 
       {nav === "stats" && <StatsView stones={allStones} collection={collection} onType={(value) => { setType(value); setStatus("all"); setNav("catalog"); }} />}
       {nav === "missing" && <MissingView stones={allStones} collection={collection} onOpen={setSelected} onCopy={copyMissing} />}
-      {nav === "settings" && <SettingsView user={user} syncStatus={syncStatus} cloudAvailable={cloudAvailable} cloudUpdatedAt={cloudUpdatedAt} recoveryAvailable={recoveryAvailable} owned={ownedCount} total={allStones.length} favorite={favoriteCount} onCloudBackup={backupToCloud} onCloudRestore={restoreFromCloud} onRecoveryRestore={restoreLocalRecovery} onExport={exportData} onImport={() => importRef.current?.click()} onInstall={install} onAdd={() => setNewStoneOpen(true)} onReset={async () => { if (confirm("确定清空收藏记录吗？操作前会保留一个本机恢复点，云端备份不会被删除。")) { await saveRecoveryPoint("清空前", collection, customStones); setRecoveryAvailable(true); setCollection({}); setToast("收藏记录已清空，可从本机恢复点找回"); } }} />}
+      {nav === "settings" && <SettingsView user={user} cloudEnabled={cloudEnabled} syncStatus={syncStatus} cloudAvailable={cloudAvailable} cloudUpdatedAt={cloudUpdatedAt} recoveryAvailable={recoveryAvailable} owned={ownedCount} total={allStones.length} favorite={favoriteCount} onCloudBackup={backupToCloud} onCloudRestore={restoreFromCloud} onRecoveryRestore={restoreLocalRecovery} onExport={exportData} onImport={() => importRef.current?.click()} onInstall={install} onAdd={() => setNewStoneOpen(true)} onReset={async () => { if (confirm("确定清空收藏记录吗？操作前会保留一个本机恢复点，云端备份不会被删除。")) { await saveRecoveryPoint("清空前", collection, customStones); setRecoveryAvailable(true); setCollection({}); setToast("收藏记录已清空，可从本机恢复点找回"); } }} />}
 
       <nav className="bottom-nav" aria-label="主要导航">
         <NavButton active={nav === "catalog"} icon="◇" label="图鉴" onClick={() => setNav("catalog")} />
@@ -528,8 +533,9 @@ function MissingView({ stones, collection, onOpen, onCopy }: { stones: Stone[]; 
   return <section className="view-page"><div className="view-title"><p>WISHLIST</p><h2>缺少清单</h2><span>按编号整理，交换和补齐收藏会更轻松。</span></div><button className="primary-action" onClick={onCopy}>复制全部缺少编号</button><div className="compact-list">{missing.slice(0, 300).map((stone) => <button key={stone.id} onClick={() => onOpen(stone)}><span className={`category-glyph type-${stone.type}`}>{TYPE_GLYPHS[stone.type]}</span><div><strong>{shownCode(stone, collection[stone.id])}</strong><p>{shownName(stone, collection[stone.id])}</p></div><span>›</span></button>)}</div>{missing.length > 300 && <p className="list-note">为保持手机流畅，这里先显示前 300 项；图鉴页可以查看全部。</p>}</section>;
 }
 
-function SettingsView({ user, syncStatus, cloudAvailable, cloudUpdatedAt, recoveryAvailable, owned, total, favorite, onCloudBackup, onCloudRestore, onRecoveryRestore, onExport, onImport, onInstall, onAdd, onReset }: {
+function SettingsView({ user, cloudEnabled, syncStatus, cloudAvailable, cloudUpdatedAt, recoveryAvailable, owned, total, favorite, onCloudBackup, onCloudRestore, onRecoveryRestore, onExport, onImport, onInstall, onAdd, onReset }: {
   user: SignedInUser | null;
+  cloudEnabled: boolean;
   syncStatus: "local" | "syncing" | "synced" | "error";
   cloudAvailable: boolean;
   cloudUpdatedAt: string | null;
@@ -546,17 +552,17 @@ function SettingsView({ user, syncStatus, cloudAvailable, cloudUpdatedAt, recove
   onAdd: () => void;
   onReset: () => void;
 }) {
-  const syncText = !user ? "仅保存在这台设备" : syncStatus === "syncing" ? "正在连接云端…" : syncStatus === "error" ? "云端暂不可用，本机数据安全" : cloudAvailable ? "云端备份可用" : "云端还没有备份";
+  const syncText = !cloudEnabled || !user ? "仅保存在这台设备" : syncStatus === "syncing" ? "正在连接云端…" : syncStatus === "error" ? "云端暂不可用，本机数据安全" : cloudAvailable ? "云端备份可用" : "云端还没有备份";
   const cloudTime = cloudUpdatedAt ? new Date(cloudUpdatedAt).toLocaleString() : "手动操作，不会自动覆盖";
   return <section className="view-page">
-    <div className="view-title"><p>MY ATLAS</p><h2>图鉴与数据</h2><span>收藏以这台设备为主；云端只用于你主动选择的备份和换机恢复。</span></div>
+    <div className="view-title"><p>MY ATLAS</p><h2>图鉴与数据</h2><span>{cloudEnabled ? "收藏以这台设备为主；云端只用于你主动选择的备份和换机恢复。" : "这是完全本机版本，不连接账号或云端；换机请使用导出和导入备份。"}</span></div>
     <div className="profile-card"><div className="profile-gem">♥</div><div><strong>{user?.displayName || "我的棱石收藏"}</strong><p>{owned}/{total} 已拥有 · {favorite} 枚心愿</p><small className={`sync-state ${syncStatus}`}>{syncText}</small></div></div>
     <div className="settings-list">
-      {user ? <>
+      {cloudEnabled && (user ? <>
         <button onClick={onCloudBackup}><span>☁</span><div><b>备份本机数据到云端</b><small>{cloudTime}</small></div><i>›</i></button>
         <button onClick={onCloudRestore}><span>↙</span><div><b>从云端恢复到本机</b><small>{cloudAvailable ? "安全合并，不清空当前收藏" : "云端还没有可用备份"}</small></div><i>›</i></button>
         <a href="/signout-with-chatgpt?return_to=%2F"><span>↪</span><div><b>退出云端备份账号</b><small>{user.email}</small></div><i>›</i></a>
-      </> : <a href="/signin-with-chatgpt?return_to=%2F"><span>☁</span><div><b>启用可选云端备份</b><small>仅在你点击时备份或恢复</small></div><i>›</i></a>}
+      </> : <a href="/signin-with-chatgpt?return_to=%2F"><span>☁</span><div><b>启用可选云端备份</b><small>仅在你点击时备份或恢复</small></div><i>›</i></a>)}
       <button onClick={onInstall}><span>⌂</span><div><b>安装到手机桌面</b><small>核心程序与图鉴目录支持离线打开</small></div><i>›</i></button>
       <button onClick={onExport}><span>⇩</span><div><b>导出收藏备份</b><small>保存勾选、数量、备注和自定义条目</small></div><i>›</i></button>
       <button onClick={onImport}><span>⇧</span><div><b>导入收藏备份</b><small>兼容之前导出的备份文件</small></div><i>›</i></button>
@@ -564,7 +570,7 @@ function SettingsView({ user, syncStatus, cloudAvailable, cloudUpdatedAt, recove
       <button onClick={onAdd}><span>＋</span><div><b>添加自定义棱石</b><small>补录图鉴之外的版本</small></div><i>›</i></button>
     </div>
     <button className="danger-action" onClick={onReset}>清空收藏记录</button>
-    <p className="privacy-note">本机数据不会因为云端失败而被清空。换机或卸载前仍建议导出备份文件。</p>
+    <p className="privacy-note">{cloudEnabled ? "本机数据不会因为云端失败而被清空。" : "此版本不会把收藏上传到服务器。"} 换机或卸载前仍建议导出备份文件。</p>
     <p className="source-note">非官方收藏工具。棱石资料与图片链接整理自 <a href="https://puritirizumu.fandom.com/wiki/Prism_Stone_Master_List" target="_blank" rel="noreferrer">Pretty Rhythm Wiki</a>，相关作品及图片权利归原权利人所有。</p>
   </section>;
 }

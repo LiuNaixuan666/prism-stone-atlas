@@ -2,7 +2,10 @@
 
 面向手机使用的《美妙旋律》Prism Stone 收藏图鉴。可以查询棱石编号、记录持有状态与数量、整理心愿项目，并导入或导出个人收藏备份。
 
-线上版本：<https://prism-stone-atlas.liunaixuan12.chatgpt.site>
+线上版本：
+
+- 本机版（GitHub Pages）：<https://liunaixuan666.github.io/prism-stone-atlas/>
+- 云端备份版（Sites）：<https://prism-stone-atlas.liunaixuan12.chatgpt.site>
 
 ## 当前功能
 
@@ -37,6 +40,12 @@ npm run dev
 
 ```bash
 npm run build
+```
+
+GitHub Pages 本机版构建：
+
+```bash
+npm run build:pages
 ```
 
 ## 项目结构

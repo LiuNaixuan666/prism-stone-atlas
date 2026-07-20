@@ -61,14 +61,28 @@ test("PWA metadata and service worker keep the application shell offline", async
   ]);
   const manifest = JSON.parse(manifestText);
   assert.equal(manifest.display, "standalone");
-  assert.equal(manifest.start_url, "/");
+  assert.equal(manifest.start_url, "./");
+  assert.equal(manifest.scope, "./");
   assert.match(worker, /skipWaiting/);
   assert.match(worker, /clients\.claim/);
   assert.match(worker, /data\/prism-stones\.json/);
   assert.match(worker, /document\.matchAll/);
-  assert.match(worker, /pathname\.startsWith\("\/assets\/"\)/);
-  assert.match(worker, /pathname\.startsWith\("\/api\/"\)/);
+  assert.match(worker, /self\.registration\.scope/);
+  assert.match(worker, /ASSET_PATH/);
+  assert.match(worker, /API_PATH/);
   assert.match(app, /prism-atlas-collection-v1/);
   assert.match(app, /prism-atlas-custom-v1/);
   assert.match(app, /prism-atlas-local/);
+});
+
+test("GitHub Pages build uses the repository base path and disables cloud UI", async () => {
+  const [html, entry, worker] = await Promise.all([
+    readFile(new URL("../pages-dist/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../github-pages/main.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../pages-dist/sw.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /\/prism-stone-atlas\/assets\//);
+  assert.match(html, /manifest\.webmanifest/);
+  assert.match(entry, /cloudEnabled=\{false\}/);
+  assert.match(worker, /self\.registration\.scope/);
 });
