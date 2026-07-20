@@ -21,6 +21,8 @@ type CollectionRecord = {
   condition?: string;
   acquired?: string;
   note?: string;
+  customCode?: string;
+  customName?: string;
   updatedAt?: string;
 };
 
@@ -29,6 +31,8 @@ type StatusFilter = "all" | "owned" | "missing" | "favorite";
 
 const STORE_KEY = "prism-atlas-collection-v1";
 const CUSTOM_KEY = "prism-atlas-custom-v1";
+const DB_NAME = "prism-atlas-local";
+const DB_STORE = "records";
 const TYPE_LABELS: Record<string, string> = {
   star: "Star",
   lovely: "Lovely",
@@ -53,6 +57,45 @@ function readLocal<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
+
+function openDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(DB_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function readDatabase<T>(key: string, fallback: T): Promise<T> {
+  try {
+    const db = await openDatabase();
+    return await new Promise<T>((resolve, reject) => {
+      const transaction = db.transaction(DB_STORE, "readonly");
+      const request = transaction.objectStore(DB_STORE).get(key);
+      request.onsuccess = () => resolve(request.result ?? fallback);
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => db.close();
+    });
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeDatabase(key: string, value: unknown) {
+  try {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(DB_STORE, "readwrite");
+      transaction.objectStore(DB_STORE).put(value, key);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } catch { /* localStorage remains as a compatibility fallback */ }
+}
+
+const shownCode = (stone: Stone, record?: CollectionRecord) => record?.customCode?.trim() || stone.code;
+const shownName = (stone: Stone, record?: CollectionRecord) => record?.customName?.trim() || stone.name;
 
 function safeImage(url: string) {
   if (!url) return "";
@@ -79,16 +122,19 @@ export function PrismAtlas() {
   const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    const localCollection = readLocal<Record<string, CollectionRecord>>(STORE_KEY, {});
+    const localCustom = readLocal<Stone[]>(CUSTOM_KEY, []);
     Promise.all([
       fetch("/data/prism-stones.json").then((r) => r.json()),
-      Promise.resolve(readLocal<Record<string, CollectionRecord>>(STORE_KEY, {})),
-      Promise.resolve(readLocal<Stone[]>(CUSTOM_KEY, [])),
+      readDatabase<Record<string, CollectionRecord>>(STORE_KEY, localCollection),
+      readDatabase<Stone[]>(CUSTOM_KEY, localCustom),
     ]).then(([catalog, saved, custom]) => {
       setStones(catalog);
       setCollection(saved);
       setCustomStones(custom);
       setReady(true);
     });
+    navigator.storage?.persist?.().catch(() => false);
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     const onInstall = (event: Event) => {
       event.preventDefault();
@@ -99,11 +145,17 @@ export function PrismAtlas() {
   }, []);
 
   useEffect(() => {
-    if (ready) localStorage.setItem(STORE_KEY, JSON.stringify(collection));
+    if (ready) {
+      localStorage.setItem(STORE_KEY, JSON.stringify(collection));
+      void writeDatabase(STORE_KEY, collection);
+    }
   }, [collection, ready]);
 
   useEffect(() => {
-    if (ready) localStorage.setItem(CUSTOM_KEY, JSON.stringify(customStones));
+    if (ready) {
+      localStorage.setItem(CUSTOM_KEY, JSON.stringify(customStones));
+      void writeDatabase(CUSTOM_KEY, customStones);
+    }
   }, [customStones, ready]);
 
   useEffect(() => setVisibleCount(80), [query, type, season, status, sort]);
@@ -127,7 +179,7 @@ export function PrismAtlas() {
     const needle = query.trim().toLocaleLowerCase();
     const list = allStones.filter((stone) => {
       const record = collection[stone.id];
-      const matchesQuery = !needle || `${stone.code} ${stone.name} ${stone.seasons.join(" ")}`.toLocaleLowerCase().includes(needle);
+      const matchesQuery = !needle || `${shownCode(stone, record)} ${shownName(stone, record)} ${stone.code} ${stone.name} ${stone.seasons.join(" ")}`.toLocaleLowerCase().includes(needle);
       const matchesType = type === "all" || stone.type === type;
       const matchesSeason = season === "all" || stone.seasons.includes(season);
       const matchesStatus = status === "all" ||
@@ -137,9 +189,9 @@ export function PrismAtlas() {
       return matchesQuery && matchesType && matchesSeason && matchesStatus;
     });
     return list.sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name);
+      if (sort === "name") return shownName(a, collection[a.id]).localeCompare(shownName(b, collection[b.id]));
       if (sort === "type") return a.type.localeCompare(b.type) || a.code.localeCompare(b.code, undefined, { numeric: true });
-      return a.code.localeCompare(b.code, undefined, { numeric: true });
+      return shownCode(a, collection[a.id]).localeCompare(shownCode(b, collection[b.id]), undefined, { numeric: true });
     });
   }, [allStones, collection, query, season, sort, status, type]);
 
@@ -206,7 +258,7 @@ export function PrismAtlas() {
   };
 
   const copyMissing = async () => {
-    const list = allStones.filter((stone) => !collection[stone.id]?.owned).map((stone) => `${stone.code} · ${stone.name}`).join("\n");
+    const list = allStones.filter((stone) => !collection[stone.id]?.owned).map((stone) => `${shownCode(stone, collection[stone.id])} · ${shownName(stone, collection[stone.id])}`).join("\n");
     await navigator.clipboard.writeText(list);
     setToast("缺少清单已复制");
   };
@@ -300,13 +352,13 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
 function StoneCard({ stone, record, onToggle, onOpen }: { stone: Stone; record?: CollectionRecord; onToggle: () => void; onOpen: () => void }) {
   const [imageFailed, setImageFailed] = useState(false);
   return <article className={`stone-card type-${stone.type} ${record?.owned ? "owned" : ""}`}>
-    <button className="card-main" onClick={onOpen} aria-label={`查看 ${stone.code} ${stone.name}`}>
+    <button className="card-main" onClick={onOpen} aria-label={`查看 ${shownCode(stone, record)} ${shownName(stone, record)}`}>
       <div className="image-wrap">
-        {stone.image && !imageFailed ? <img src={safeImage(stone.image)} alt={`${stone.code} ${stone.name}`} loading="lazy" onError={() => setImageFailed(true)} /> : <div className="image-placeholder"><span>{TYPE_GLYPHS[stone.type] || "◇"}</span><small>图片暂缺</small></div>}
+        {stone.image && !imageFailed ? <img src={safeImage(stone.image)} alt={`${shownCode(stone, record)} ${shownName(stone, record)}`} loading="lazy" onError={() => setImageFailed(true)} /> : <div className="image-placeholder"><span>{TYPE_GLYPHS[stone.type] || "◇"}</span><small>图片暂缺</small></div>}
         <span className="type-badge">{TYPE_GLYPHS[stone.type]} {TYPE_LABELS[stone.type] || stone.type}</span>
         {record?.favorite && <span className="favorite-badge">♥</span>}
       </div>
-      <div className="card-copy"><strong>{stone.code}</strong><p>{stone.name}</p><small>{stone.seasons.join(" · ") || "季次未知"}</small></div>
+      <div className="card-copy"><strong>{shownCode(stone, record)}</strong><p>{shownName(stone, record)}</p><small>{stone.seasons.join(" · ") || "季次未知"}</small></div>
     </button>
     <button className={`owned-toggle ${record?.owned ? "checked" : ""}`} onClick={onToggle} aria-label={record?.owned ? "标记为缺少" : "标记为拥有"}><span>{record?.owned ? "✓" : "+"}</span>{record?.owned ? "已拥有" : "加入收藏"}</button>
   </article>;
@@ -316,11 +368,13 @@ function DetailSheet({ stone, record = { owned: false }, onClose, onUpdate, onDe
   const [imageFailed, setImageFailed] = useState(false);
   return <div className="sheet-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="detail-sheet" role="dialog" aria-modal="true" aria-label={`${stone.code} 详情`}>
     <div className="sheet-handle" /><button className="sheet-close" onClick={onClose} aria-label="关闭">×</button>
-    <div className="detail-image">{stone.image && !imageFailed ? <img src={safeImage(stone.image)} alt={`${stone.code} ${stone.name}`} onError={() => setImageFailed(true)} /> : <span>◇</span>}</div>
-    <div className="detail-title"><div><span>{TYPE_GLYPHS[stone.type]} {TYPE_LABELS[stone.type] || stone.type}</span><h2>{stone.name}</h2><strong>{stone.code}</strong></div><button className={record.favorite ? "favorite active" : "favorite"} onClick={() => onUpdate({ favorite: !record.favorite })}>♥</button></div>
+    <div className="detail-image">{stone.image && !imageFailed ? <img src={safeImage(stone.image)} alt={`${shownCode(stone, record)} ${shownName(stone, record)}`} onError={() => setImageFailed(true)} /> : <span>◇</span>}</div>
+    <div className="detail-title"><div><span>{TYPE_GLYPHS[stone.type]} {TYPE_LABELS[stone.type] || stone.type}</span><h2>{shownName(stone, record)}</h2><strong>{shownCode(stone, record)}</strong></div><button className={record.favorite ? "favorite active" : "favorite"} onClick={() => onUpdate({ favorite: !record.favorite })}>♥</button></div>
     <div className="season-pills">{stone.seasons.map((s) => <span key={s}>{s}</span>)}</div>
     <label className="owned-switch"><input type="checkbox" checked={!!record.owned} onChange={(e) => onUpdate({ owned: e.target.checked, quantity: e.target.checked ? Math.max(1, record.quantity || 1) : 0 })} /><span /><b>{record.owned ? "我拥有这枚棱石" : "标记为已拥有"}</b></label>
     <div className="form-grid">
+      <label>显示编号<input value={record.customCode || ""} onChange={(e) => onUpdate({ customCode: e.target.value })} placeholder={stone.code} /></label>
+      <label>显示名称<input value={record.customName || ""} onChange={(e) => onUpdate({ customName: e.target.value })} placeholder={stone.name} /></label>
       <label>数量<input type="number" min="0" value={record.quantity || 0} onChange={(e) => onUpdate({ quantity: Number(e.target.value), owned: Number(e.target.value) > 0 })} /></label>
       <label>品相<select value={record.condition || ""} onChange={(e) => onUpdate({ condition: e.target.value })}><option value="">未记录</option><option>全新</option><option>良好</option><option>有使用痕迹</option><option>待更换</option></select></label>
       <label className="wide">获得日期<input type="date" value={record.acquired || ""} onChange={(e) => onUpdate({ acquired: e.target.value })} /></label>
@@ -346,11 +400,11 @@ function StatsView({ stones, collection, onType }: { stones: Stone[]; collection
 
 function MissingView({ stones, collection, onOpen, onCopy }: { stones: Stone[]; collection: Record<string, CollectionRecord>; onOpen: (stone: Stone) => void; onCopy: () => void }) {
   const missing = stones.filter((s) => !collection[s.id]?.owned);
-  return <section className="view-page"><div className="view-title"><p>WISHLIST</p><h2>缺少清单</h2><span>按编号整理，交换和补齐收藏会更轻松。</span></div><button className="primary-action" onClick={onCopy}>复制全部缺少编号</button><div className="compact-list">{missing.slice(0, 300).map((stone) => <button key={stone.id} onClick={() => onOpen(stone)}><span className={`category-glyph type-${stone.type}`}>{TYPE_GLYPHS[stone.type]}</span><div><strong>{stone.code}</strong><p>{stone.name}</p></div><span>›</span></button>)}</div>{missing.length > 300 && <p className="list-note">为保持手机流畅，这里先显示前 300 项；图鉴页可以查看全部。</p>}</section>;
+  return <section className="view-page"><div className="view-title"><p>WISHLIST</p><h2>缺少清单</h2><span>按编号整理，交换和补齐收藏会更轻松。</span></div><button className="primary-action" onClick={onCopy}>复制全部缺少编号</button><div className="compact-list">{missing.slice(0, 300).map((stone) => <button key={stone.id} onClick={() => onOpen(stone)}><span className={`category-glyph type-${stone.type}`}>{TYPE_GLYPHS[stone.type]}</span><div><strong>{shownCode(stone, collection[stone.id])}</strong><p>{shownName(stone, collection[stone.id])}</p></div><span>›</span></button>)}</div>{missing.length > 300 && <p className="list-note">为保持手机流畅，这里先显示前 300 项；图鉴页可以查看全部。</p>}</section>;
 }
 
 function SettingsView({ owned, total, favorite, onExport, onImport, onInstall, onAdd, onReset }: { owned: number; total: number; favorite: number; onExport: () => void; onImport: () => void; onInstall: () => void; onAdd: () => void; onReset: () => void }) {
-  return <section className="view-page"><div className="view-title"><p>MY ATLAS</p><h2>图鉴与数据</h2><span>你的勾选只保存在当前设备，请定期备份。</span></div><div className="profile-card"><div className="profile-gem">♥</div><div><strong>我的棱石收藏</strong><p>{owned}/{total} 已拥有 · {favorite} 枚心愿</p></div></div><div className="settings-list">
+  return <section className="view-page"><div className="view-title"><p>MY ATLAS</p><h2>图鉴与数据</h2><span>记录使用持久本地数据库保存；换浏览器或设备前请导出备份。</span></div><div className="profile-card"><div className="profile-gem">♥</div><div><strong>我的棱石收藏</strong><p>{owned}/{total} 已拥有 · {favorite} 枚心愿</p></div></div><div className="settings-list">
     <button onClick={onInstall}><span>⌂</span><div><b>安装到手机桌面</b><small>像 App 一样快速打开</small></div><i>›</i></button>
     <button onClick={onExport}><span>⇩</span><div><b>导出收藏备份</b><small>保存勾选、数量与备注</small></div><i>›</i></button>
     <button onClick={onImport}><span>⇧</span><div><b>导入收藏备份</b><small>换手机后恢复收藏</small></div><i>›</i></button>
