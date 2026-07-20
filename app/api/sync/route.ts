@@ -23,7 +23,7 @@ export async function PUT(request: Request) {
   const user = await getChatGPTUser();
   if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
 
-  const body = await request.json() as { collection?: unknown; customStones?: unknown };
+  const body = await request.json() as { collection?: unknown; customStones?: unknown; expectedUpdatedAt?: string | null };
   if (!body.collection || typeof body.collection !== "object" || Array.isArray(body.collection) || !Array.isArray(body.customStones)) {
     return Response.json({ error: "Invalid collection snapshot" }, { status: 400 });
   }
@@ -32,11 +32,19 @@ export async function PUT(request: Request) {
     return Response.json({ error: "Collection snapshot is too large" }, { status: 413 });
   }
 
+  const email = user.email.toLocaleLowerCase();
+  const current = await env.DB.prepare(
+    "SELECT updated_at FROM collection_snapshots WHERE user_email = ?",
+  ).bind(email).first<{ updated_at: string }>();
+  if (body.expectedUpdatedAt !== undefined && (current?.updated_at ?? null) !== body.expectedUpdatedAt) {
+    return Response.json({ error: "Cloud backup changed", updatedAt: current?.updated_at ?? null }, { status: 409 });
+  }
+
   const updatedAt = new Date().toISOString();
   await env.DB.prepare(
     `INSERT INTO collection_snapshots (user_email, payload, version, updated_at)
      VALUES (?, ?, 1, ?)
      ON CONFLICT(user_email) DO UPDATE SET payload = excluded.payload, version = 1, updated_at = excluded.updated_at`,
-  ).bind(user.email.toLocaleLowerCase(), payload, updatedAt).run();
+  ).bind(email, payload, updatedAt).run();
   return Response.json({ ok: true, updatedAt });
 }

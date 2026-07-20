@@ -1,0 +1,74 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import {
+  createBackupPayload,
+  mergeCollections,
+  mergeCustomStones,
+  readBackupPayload,
+  snapshotsDiffer,
+} from "../app/collection-safety.mjs";
+
+test("newer collection record wins without dropping records from either side", () => {
+  const local = {
+    localOnly: { owned: true, updatedAt: "2026-07-21T10:00:00.000Z" },
+    shared: { owned: true, updatedAt: "2026-07-21T12:00:00.000Z" },
+  };
+  const remote = {
+    remoteOnly: { owned: true, updatedAt: "2026-07-21T11:00:00.000Z" },
+    shared: { owned: false, updatedAt: "2026-07-21T09:00:00.000Z" },
+  };
+  assert.deepEqual(mergeCollections(local, remote), {
+    remoteOnly: remote.remoteOnly,
+    shared: local.shared,
+    localOnly: local.localOnly,
+  });
+});
+
+test("legacy records without timestamps prefer the current device", () => {
+  const local = { stone: { owned: true } };
+  const remote = { stone: { owned: false } };
+  assert.equal(mergeCollections(local, remote).stone.owned, true);
+});
+
+test("custom stones merge by id and keep the current device version", () => {
+  const local = [{ id: "same", name: "本机名称" }, { id: "local", name: "本机新增" }];
+  const remote = [{ id: "same", name: "云端名称" }, { id: "remote", name: "云端新增" }];
+  const merged = mergeCustomStones(local, remote);
+  assert.deepEqual(new Set(merged.map((stone) => stone.id)), new Set(["same", "local", "remote"]));
+  assert.equal(merged.find((stone) => stone.id === "same").name, "本机名称");
+});
+
+test("version 1 backups remain importable and version 2 backups round-trip", () => {
+  const versionOne = { version: 1, collection: { a: { owned: true } } };
+  assert.deepEqual(readBackupPayload(versionOne), { collection: versionOne.collection, customStones: [] });
+  const versionTwo = createBackupPayload(versionOne.collection, [{ id: "custom" }], "2026-07-21T00:00:00.000Z");
+  assert.equal(versionTwo.version, 2);
+  assert.deepEqual(readBackupPayload(versionTwo), { collection: versionTwo.collection, customStones: versionTwo.customStones });
+});
+
+test("recovery comparison ignores snapshot metadata", () => {
+  const data = { collection: { a: { owned: true } }, customStones: [] };
+  assert.equal(snapshotsDiffer({ ...data, savedAt: "old" }, { ...data, savedAt: "new" }), false);
+  assert.equal(snapshotsDiffer(data, { collection: {}, customStones: [] }), true);
+});
+
+test("PWA metadata and service worker keep the application shell offline", async () => {
+  const [manifestText, worker, app] = await Promise.all([
+    readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
+    readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
+    readFile(new URL("../app/PrismAtlas.tsx", import.meta.url), "utf8"),
+  ]);
+  const manifest = JSON.parse(manifestText);
+  assert.equal(manifest.display, "standalone");
+  assert.equal(manifest.start_url, "/");
+  assert.match(worker, /skipWaiting/);
+  assert.match(worker, /clients\.claim/);
+  assert.match(worker, /data\/prism-stones\.json/);
+  assert.match(worker, /document\.matchAll/);
+  assert.match(worker, /pathname\.startsWith\("\/assets\/"\)/);
+  assert.match(worker, /pathname\.startsWith\("\/api\/"\)/);
+  assert.match(app, /prism-atlas-collection-v1/);
+  assert.match(app, /prism-atlas-custom-v1/);
+  assert.match(app, /prism-atlas-local/);
+});
