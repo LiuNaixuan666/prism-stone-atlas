@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "prism-atlas-";
-const CACHE = `${CACHE_PREFIX}v5`;
+const CACHE = `${CACHE_PREFIX}v6`;
 const SCOPE_URL = new URL("./", self.registration.scope);
 const APP_ROOT = SCOPE_URL.toString();
 const ASSET_PATH = new URL("assets/", SCOPE_URL).pathname;
@@ -42,12 +42,37 @@ async function cacheDocumentAssets(cache, response, baseUrl) {
   } catch { /* the document and core data remain available */ }
 }
 
+async function cacheCatalogImages(cache) {
+  try {
+    const catalogUrl = new URL("data/prism-stones.json", SCOPE_URL).toString();
+    const response = (await cache.match(catalogUrl)) || (await cacheOne(cache, catalogUrl));
+    if (!response?.ok) return;
+    const catalog = await response.clone().json();
+    const urls = Array.from(new Set(catalog
+      .map((stone) => stone.image)
+      .filter(Boolean)
+      .map((value) => new URL(value, SCOPE_URL))
+      .filter((url) => url.origin === self.location.origin && url.pathname.startsWith(SCOPE_URL.pathname))
+      .map((url) => url.toString())));
+    let cursor = 0;
+    const workers = Array.from({ length: 12 }, async () => {
+      while (cursor < urls.length) {
+        const url = urls[cursor];
+        cursor += 1;
+        await cacheOne(cache, url);
+      }
+    });
+    await Promise.allSettled(workers);
+  } catch { /* missing source images do not prevent the app shell from installing */ }
+}
+
 async function refreshShell() {
   const cache = await caches.open(CACHE);
   await Promise.allSettled(CORE.map(async (path) => {
     const response = await cacheOne(cache, path);
-    if (path === APP_ROOT && response?.ok) await cacheDocumentAssets(cache, response, APP_ROOT);
+      if (path === APP_ROOT && response?.ok) await cacheDocumentAssets(cache, response, APP_ROOT);
   }));
+  await cacheCatalogImages(cache);
 }
 
 self.addEventListener("install", (event) => {

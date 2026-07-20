@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import {
   createBackupPayload,
@@ -70,9 +70,26 @@ test("PWA metadata and service worker keep the application shell offline", async
   assert.match(worker, /self\.registration\.scope/);
   assert.match(worker, /ASSET_PATH/);
   assert.match(worker, /API_PATH/);
+  assert.match(worker, /cacheCatalogImages/);
   assert.match(app, /prism-atlas-collection-v1/);
   assert.match(app, /prism-atlas-custom-v1/);
   assert.match(app, /prism-atlas-local/);
+});
+
+test("catalog images are bundled locally for reliable and offline viewing", async () => {
+  const [catalogText, imageFiles] = await Promise.all([
+    readFile(new URL("../public/data/prism-stones.json", import.meta.url), "utf8"),
+    readdir(new URL("../public/prism-stones/", import.meta.url)),
+  ]);
+  const catalog = JSON.parse(catalogText);
+  const available = catalog.filter((stone) => stone.image);
+  const bundled = new Set(imageFiles);
+  assert.equal(available.length, 2073);
+  assert.equal(imageFiles.length, 2073);
+  assert.equal(available.some((stone) => /^https?:/.test(stone.image)), false);
+  for (const stone of available) {
+    assert.equal(bundled.has(stone.image.replace(/^prism-stones\//, "")), true, stone.image);
+  }
 });
 
 test("GitHub Pages build uses the repository base path and disables cloud UI", async () => {

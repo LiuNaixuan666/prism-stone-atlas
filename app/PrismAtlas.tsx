@@ -134,7 +134,8 @@ const shownName = (stone: Stone, record?: CollectionRecord) => record?.customNam
 
 function safeImage(url: string) {
   if (!url) return "";
-  return url.replace(/^http:/, "https:");
+  if (/^(?:https?:|data:|blob:)/.test(url)) return url.replace(/^http:/, "https:");
+  return appAssetUrl(url);
 }
 
 function appAssetUrl(path: string) {
