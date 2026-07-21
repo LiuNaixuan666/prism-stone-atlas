@@ -66,7 +66,9 @@ let missing = 0;
 for (let index = 0; index < catalog.length; index += 1) {
   const stone = catalog[index];
   const source = manifest[index];
-  if (source.type !== stone.type || source.code !== stone.code || source.clothing !== stone.name) {
+  // Codes may contain source-verified corrections that intentionally differ
+  // from the older downloader manifest; type and source page name remain stable.
+  if (source.type !== stone.type || source.clothing !== stone.name) {
     throw new Error(`Manifest/catalog row mismatch at ${index}: ${source.code} / ${stone.code}`);
   }
 

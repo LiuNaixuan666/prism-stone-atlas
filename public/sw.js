@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "prism-atlas-";
-const CACHE = `${CACHE_PREFIX}v6`;
+const CACHE = `${CACHE_PREFIX}v7`;
 const SCOPE_URL = new URL("./", self.registration.scope);
 const APP_ROOT = SCOPE_URL.toString();
 const ASSET_PATH = new URL("assets/", SCOPE_URL).pathname;

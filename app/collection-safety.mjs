@@ -16,7 +16,7 @@ export function mergeCustomStones(local = [], remote = []) {
 }
 
 export function createBackupPayload(collection, customStones, exportedAt = new Date().toISOString()) {
-  return { version: 2, exportedAt, collection, customStones };
+  return { version: 3, exportedAt, collection, customStones, corrections: extractCorrections(collection) };
 }
 
 export function readBackupPayload(value) {
@@ -26,6 +26,52 @@ export function readBackupPayload(value) {
   const customStones = value.customStones ?? [];
   if (!Array.isArray(customStones)) throw new Error("invalid custom stones");
   return { collection, customStones };
+}
+
+export function extractCorrections(collection = {}) {
+  return Object.fromEntries(Object.entries(collection).flatMap(([id, record]) => {
+    const customCode = typeof record?.customCode === "string" ? record.customCode.trim() : "";
+    const customName = typeof record?.customName === "string" ? record.customName.trim() : "";
+    return customCode || customName ? [[id, { customCode, customName, updatedAt: record.updatedAt || "" }]] : [];
+  }));
+}
+
+export function createCorrectionsPayload(collection, exportedAt = new Date().toISOString()) {
+  return { kind: "prism-atlas-corrections", version: 1, exportedAt, corrections: extractCorrections(collection) };
+}
+
+export function readCorrectionsPayload(value) {
+  if (!value || value.kind !== "prism-atlas-corrections" || !value.corrections || typeof value.corrections !== "object" || Array.isArray(value.corrections)) {
+    throw new Error("invalid corrections");
+  }
+  return value.corrections;
+}
+
+export function mergeCorrections(collection = {}, corrections = {}) {
+  const merged = { ...collection };
+  for (const [id, correction] of Object.entries(corrections)) {
+    if (!correction || typeof correction !== "object") continue;
+    const customCode = typeof correction.customCode === "string" ? correction.customCode.trim() : "";
+    const customName = typeof correction.customName === "string" ? correction.customName.trim() : "";
+    if (!customCode && !customName) continue;
+    merged[id] = {
+      ...merged[id],
+      ...(customCode ? { customCode } : {}),
+      ...(customName ? { customName } : {}),
+      updatedAt: [merged[id]?.updatedAt || "", correction.updatedAt || "", new Date().toISOString()].sort().at(-1),
+    };
+  }
+  return merged;
+}
+
+export function createCustomStonesPayload(customStones, exportedAt = new Date().toISOString()) {
+  return { kind: "prism-atlas-custom-stones", version: 1, exportedAt, customStones };
+}
+
+export function readCustomStonesPayload(value) {
+  const customStones = value?.kind === "prism-atlas-custom-stones" ? value.customStones : value?.customStones;
+  if (!Array.isArray(customStones)) throw new Error("invalid custom stones");
+  return customStones.filter((stone) => stone && typeof stone.id === "string" && stone.custom === true);
 }
 
 export function snapshotsDiffer(left, right) {

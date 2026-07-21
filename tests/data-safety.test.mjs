@@ -3,9 +3,14 @@ import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import {
   createBackupPayload,
+  createCorrectionsPayload,
+  createCustomStonesPayload,
+  mergeCorrections,
   mergeCollections,
   mergeCustomStones,
   readBackupPayload,
+  readCorrectionsPayload,
+  readCustomStonesPayload,
   snapshotsDiffer,
 } from "../app/collection-safety.mjs";
 
@@ -39,12 +44,27 @@ test("custom stones merge by id and keep the current device version", () => {
   assert.equal(merged.find((stone) => stone.id === "same").name, "本机名称");
 });
 
-test("version 1 backups remain importable and version 2 backups round-trip", () => {
+test("legacy backups remain importable and current backups round-trip", () => {
   const versionOne = { version: 1, collection: { a: { owned: true } } };
   assert.deepEqual(readBackupPayload(versionOne), { collection: versionOne.collection, customStones: [] });
   const versionTwo = createBackupPayload(versionOne.collection, [{ id: "custom" }], "2026-07-21T00:00:00.000Z");
-  assert.equal(versionTwo.version, 2);
+  assert.equal(versionTwo.version, 3);
   assert.deepEqual(readBackupPayload(versionTwo), { collection: versionTwo.collection, customStones: versionTwo.customStones });
+});
+
+test("custom stones and manual catalog corrections can be shared separately", () => {
+  const collection = {
+    stone: { owned: true, customName: "订正名称", customCode: "NEW-01", updatedAt: "2026-07-21T00:00:00.000Z" },
+    untouched: { owned: true },
+  };
+  const corrections = createCorrectionsPayload(collection, "2026-07-21T00:00:00.000Z");
+  assert.deepEqual(readCorrectionsPayload(corrections), corrections.corrections);
+  const merged = mergeCorrections({ stone: { owned: true, note: "保留备注" } }, corrections.corrections);
+  assert.equal(merged.stone.customName, "订正名称");
+  assert.equal(merged.stone.note, "保留备注");
+
+  const custom = [{ id: "custom-one", custom: true, code: "C-01", image: "data:image/webp;base64,AA" }];
+  assert.deepEqual(readCustomStonesPayload(createCustomStonesPayload(custom)), custom);
 });
 
 test("recovery comparison ignores snapshot metadata", () => {
@@ -90,6 +110,9 @@ test("catalog images are bundled locally for reliable and offline viewing", asyn
   for (const stone of available) {
     assert.equal(bundled.has(stone.image.replace(/^prism-stones\//, "")), true, stone.image);
   }
+  const corrected = Object.fromEntries(catalog.map((stone) => [stone.id, stone.code]));
+  assert.equal(corrected["85c0b41c1c05"], "P-ち01★");
+  assert.equal(corrected["3b7458f787f4"], "P-ウ20★");
 });
 
 test("GitHub Pages build uses the repository base path and disables cloud UI", async () => {

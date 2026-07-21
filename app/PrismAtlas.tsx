@@ -1,7 +1,18 @@
 "use client";
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { createBackupPayload, mergeCollections, mergeCustomStones, readBackupPayload, snapshotsDiffer } from "./collection-safety.mjs";
+import {
+  createBackupPayload,
+  createCorrectionsPayload,
+  createCustomStonesPayload,
+  mergeCollections,
+  mergeCorrections,
+  mergeCustomStones,
+  readBackupPayload,
+  readCorrectionsPayload,
+  readCustomStonesPayload,
+  snapshotsDiffer,
+} from "./collection-safety.mjs";
 
 type SignedInUser = { displayName: string; email: string };
 
@@ -39,6 +50,7 @@ type RecoverySnapshot = {
 
 type Nav = "catalog" | "stats" | "missing" | "settings";
 type StatusFilter = "all" | "owned" | "missing" | "favorite";
+type SearchScope = "code" | "name" | "all";
 
 const STORE_KEY = "prism-atlas-collection-v1";
 const CUSTOM_KEY = "prism-atlas-custom-v1";
@@ -56,11 +68,14 @@ const TYPE_LABELS: Record<string, string> = {
   sexy: "Sexy",
   surprise: "Surprise",
   custom: "自定义",
+  unknown: "未知颜色",
 };
 const TYPE_GLYPHS: Record<string, string> = {
   star: "★", lovely: "♥", pop: "●", feminine: "✦", ethnic: "◆",
-  cool: "✧", sexy: "♦", surprise: "?", custom: "+",
+  cool: "✧", sexy: "♦", surprise: "?", custom: "+", unknown: "◇",
 };
+
+const STONE_TYPES = Object.keys(TYPE_LABELS).filter((value) => value !== "custom");
 
 function readLocal<T>(key: string, fallback: T): T {
   try {
@@ -143,6 +158,15 @@ function appAssetUrl(path: string) {
   return new URL(path.replace(/^\/+/, ""), document.baseURI).toString();
 }
 
+function downloadJson(filename: string, value: unknown) {
+  const href = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(href);
+}
+
 export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser | null; cloudEnabled?: boolean }) {
   const [stones, setStones] = useState<Stone[]>([]);
   const [customStones, setCustomStones] = useState<Stone[]>([]);
@@ -150,8 +174,9 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
   const [ready, setReady] = useState(false);
   const [nav, setNav] = useState<Nav>("catalog");
   const [query, setQuery] = useState("");
-  const [type, setType] = useState("all");
-  const [season, setSeason] = useState("all");
+  const [searchScope, setSearchScope] = useState<SearchScope>("code");
+  const [types, setTypes] = useState<string[]>([]);
+  const [selectedSeasons, setSelectedSeasons] = useState<string[]>([]);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState("code");
   const [visibleCount, setVisibleCount] = useState(80);
@@ -165,6 +190,8 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
   const [cloudUpdatedAt, setCloudUpdatedAt] = useState<string | null>(null);
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
+  const customImportRef = useRef<HTMLInputElement>(null);
+  const correctionsImportRef = useRef<HTMLInputElement>(null);
   const syncing = useRef(false);
 
   useEffect(() => {
@@ -235,7 +262,7 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
   useEffect(() => {
     const timer = window.setTimeout(() => setVisibleCount(80), 0);
     return () => window.clearTimeout(timer);
-  }, [query, type, season, status, sort]);
+  }, [query, searchScope, selectedSeasons, status, sort, types]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2200);
@@ -256,9 +283,14 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
     const needle = query.trim().toLocaleLowerCase();
     const list = allStones.filter((stone) => {
       const record = collection[stone.id];
-      const matchesQuery = !needle || `${shownCode(stone, record)} ${shownName(stone, record)} ${stone.code} ${stone.name} ${stone.seasons.join(" ")}`.toLocaleLowerCase().includes(needle);
-      const matchesType = type === "all" || stone.type === type;
-      const matchesSeason = season === "all" || stone.seasons.includes(season);
+      const queryValues = searchScope === "code"
+        ? `${shownCode(stone, record)} ${stone.code}`
+        : searchScope === "name"
+          ? `${shownName(stone, record)} ${stone.name}`
+          : `${shownCode(stone, record)} ${shownName(stone, record)} ${stone.code} ${stone.name}`;
+      const matchesQuery = !needle || queryValues.toLocaleLowerCase().includes(needle);
+      const matchesType = !types.length || types.some((value) => value === "custom" ? stone.custom : stone.type === value);
+      const matchesSeason = !selectedSeasons.length || selectedSeasons.some((value) => stone.seasons.includes(value));
       const matchesStatus = status === "all" ||
         (status === "owned" && record?.owned) ||
         (status === "missing" && !record?.owned) ||
@@ -270,7 +302,11 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
       if (sort === "type") return a.type.localeCompare(b.type) || a.code.localeCompare(b.code, undefined, { numeric: true });
       return shownCode(a, collection[a.id]).localeCompare(shownCode(b, collection[b.id]), undefined, { numeric: true });
     });
-  }, [allStones, collection, query, season, sort, status, type]);
+  }, [allStones, collection, query, searchScope, selectedSeasons, sort, status, types]);
+
+  const toggleFilter = (value: string, current: string[], setter: (value: string[]) => void) => {
+    setter(current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+  };
 
   const updateRecord = (id: string, patch: Partial<CollectionRecord>) => {
     setCollection((current) => ({
@@ -298,14 +334,8 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
   };
 
   const exportData = () => {
-    const payload = createBackupPayload(collection, customStones);
-    const href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.download = `棱石收藏备份-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(href);
-    setToast("备份已导出");
+    downloadJson(`棱石完整设备备份-${new Date().toISOString().slice(0, 10)}.json`, createBackupPayload(collection, customStones));
+    setToast("完整设备备份已导出");
   };
 
   const importData = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -315,11 +345,55 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
       const payload = readBackupPayload(JSON.parse(await file.text())) as { collection: Record<string, CollectionRecord>; customStones: Stone[] };
       await saveRecoveryPoint("导入前", collection, customStones);
       setRecoveryAvailable(true);
-      setCollection(payload.collection);
-      setCustomStones(payload.customStones);
-      setToast("收藏备份已导入");
+      setCollection(mergeCollections(collection, payload.collection));
+      setCustomStones(mergeCustomStones(customStones, payload.customStones));
+      setToast("完整备份已安全合并");
     } catch {
       setToast("无法读取这个备份文件");
+    }
+    event.target.value = "";
+  };
+
+  const exportCustomStones = () => {
+    downloadJson(`自定义棱石-${new Date().toISOString().slice(0, 10)}.json`, createCustomStonesPayload(customStones));
+    setToast(`已导出 ${customStones.length} 条自定义棱石`);
+  };
+
+  const importCustomStones = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const imported = readCustomStonesPayload(JSON.parse(await file.text())) as Stone[];
+      await saveRecoveryPoint("导入自定义棱石前", collection, customStones);
+      setCustomStones(mergeCustomStones(customStones, imported));
+      setRecoveryAvailable(true);
+      setTypes(["custom"]);
+      setSelectedSeasons([]);
+      setNav("catalog");
+      setToast(`已导入并合并 ${imported.length} 条自定义棱石`);
+    } catch {
+      setToast("无法读取这个自定义棱石文件");
+    }
+    event.target.value = "";
+  };
+
+  const exportCorrections = () => {
+    const payload = createCorrectionsPayload(collection);
+    downloadJson(`棱石名称订正-${new Date().toISOString().slice(0, 10)}.json`, payload);
+    setToast(`已导出 ${Object.keys(payload.corrections).length} 条订正记录`);
+  };
+
+  const importCorrections = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const corrections = readCorrectionsPayload(JSON.parse(await file.text()));
+      await saveRecoveryPoint("导入名称订正前", collection, customStones);
+      setCollection(mergeCorrections(collection, corrections));
+      setRecoveryAvailable(true);
+      setToast(`已应用 ${Object.keys(corrections).length} 条名称订正`);
+    } catch {
+      setToast("无法读取这个名称订正文件");
     }
     event.target.value = "";
   };
@@ -352,6 +426,7 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
     syncing.current = true; setSyncStatus("syncing");
     try {
       const response = await fetch("/api/sync", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ collection, customStones, expectedUpdatedAt: cloudUpdatedAt }) });
+      if (response.status === 413) throw new Error("too-large");
       if (response.status === 409) {
         const latest = await response.json() as { updatedAt?: string | null };
         setCloudUpdatedAt(latest.updatedAt || null);
@@ -365,7 +440,7 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
       setSyncStatus("synced"); setToast("本机收藏已备份到云端");
     } catch (error) {
       setSyncStatus("error");
-      setToast(error instanceof Error && error.message === "conflict" ? "云端已有更新，请先恢复云端备份" : "云端备份失败，本机数据不受影响");
+      setToast(error instanceof Error && error.message === "conflict" ? "云端已有更新，请先恢复云端备份" : error instanceof Error && error.message === "too-large" ? "自定义图片较多，云端容量不足；请使用完整设备备份文件" : "云端备份失败，本机数据不受影响");
     }
     finally { syncing.current = false; }
   };
@@ -425,13 +500,14 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
       {nav === "catalog" && (
         <>
           <section className="search-row">
-            <label className="search-box"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索编号、名称或季次" /></label>
+            <label className="search-scope"><span>搜索范围</span><select value={searchScope} onChange={(e) => setSearchScope(e.target.value as SearchScope)}><option value="code">编号</option><option value="name">名称</option><option value="all">编号＋名称</option></select></label>
+            <label className="search-box"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchScope === "code" ? "只搜索编号" : searchScope === "name" ? "只搜索名称" : "搜索编号或名称"} /></label>
             <button className={`filter-button ${showFilters ? "active" : ""}`} onClick={() => setShowFilters((v) => !v)} aria-label="更多筛选">☷</button>
           </section>
           <div className="type-scroller" aria-label="分类筛选">
-            <FilterChip active={type === "all"} onClick={() => setType("all")}>全部</FilterChip>
+            <FilterChip active={!types.length} onClick={() => setTypes([])}>全部</FilterChip>
             {Object.entries(TYPE_LABELS).filter(([key]) => key !== "custom" || customStones.length).map(([key, label]) => (
-              <FilterChip key={key} active={type === key} onClick={() => setType(key)}><b>{TYPE_GLYPHS[key]}</b>{label}</FilterChip>
+              <FilterChip key={key} active={types.includes(key)} onClick={() => toggleFilter(key, types, setTypes)}><b>{TYPE_GLYPHS[key]}</b>{label}</FilterChip>
             ))}
           </div>
           <div className="status-tabs">
@@ -442,11 +518,11 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
             ))}
           </div>
           {showFilters && <section className="advanced-filters">
-            <label>季次<select value={season} onChange={(e) => setSeason(e.target.value)}><option value="all">全部季次</option>{seasons.map((s) => <option key={s}>{s}</option>)}</select></label>
             <label>排序<select value={sort} onChange={(e) => setSort(e.target.value)}><option value="code">按编号</option><option value="name">按名称</option><option value="type">按分类</option></select></label>
+            <div className="season-filter"><div><b>季次（可多选）</b><button onClick={() => setSelectedSeasons([])}>清除</button></div><div>{seasons.map((value) => <FilterChip key={value} active={selectedSeasons.includes(value)} onClick={() => toggleFilter(value, selectedSeasons, setSelectedSeasons)}>{value}</FilterChip>)}</div></div>
             <div className="batch-actions"><button onClick={() => batchSet(true)}>当前全部拥有</button><button onClick={() => batchSet(false)}>当前全部缺少</button></div>
           </section>}
-          <section className="section-heading"><div><p>{status === "all" ? "完整收藏册" : status === "owned" ? "我的收藏" : status === "missing" ? "待收集" : "心愿清单"}</p><span>找到 {filtered.length} 枚棱石</span></div><button onClick={() => { setQuery(""); setType("all"); setSeason("all"); setStatus("all"); }}>重置</button></section>
+          <section className="section-heading"><div><p>{status === "all" ? "完整收藏册" : status === "owned" ? "我的收藏" : status === "missing" ? "待收集" : "心愿清单"}</p><span>找到 {filtered.length} 枚棱石</span></div><button onClick={() => { setQuery(""); setTypes([]); setSelectedSeasons([]); setStatus("all"); }}>重置</button></section>
           <section className="stone-grid">
             {filtered.slice(0, visibleCount).map((stone) => <StoneCard key={stone.id} stone={stone} record={collection[stone.id]} onToggle={() => toggleOwned(stone)} onOpen={() => setSelected(stone)} />)}
           </section>
@@ -455,9 +531,9 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
         </>
       )}
 
-      {nav === "stats" && <StatsView stones={allStones} collection={collection} onType={(value) => { setType(value); setStatus("all"); setNav("catalog"); }} />}
+      {nav === "stats" && <StatsView stones={allStones} collection={collection} onType={(value) => { setTypes([value]); setStatus("all"); setNav("catalog"); }} />}
       {nav === "missing" && <MissingView stones={allStones} collection={collection} onOpen={setSelected} onCopy={copyMissing} />}
-      {nav === "settings" && <SettingsView user={user} cloudEnabled={cloudEnabled} syncStatus={syncStatus} cloudAvailable={cloudAvailable} cloudUpdatedAt={cloudUpdatedAt} recoveryAvailable={recoveryAvailable} owned={ownedCount} total={allStones.length} favorite={favoriteCount} onCloudBackup={backupToCloud} onCloudRestore={restoreFromCloud} onRecoveryRestore={restoreLocalRecovery} onExport={exportData} onImport={() => importRef.current?.click()} onInstall={install} onAdd={() => setNewStoneOpen(true)} onReset={async () => { if (confirm("确定清空收藏记录吗？操作前会保留一个本机恢复点，云端备份不会被删除。")) { await saveRecoveryPoint("清空前", collection, customStones); setRecoveryAvailable(true); setCollection({}); setToast("收藏记录已清空，可从本机恢复点找回"); } }} />}
+      {nav === "settings" && <SettingsView user={user} cloudEnabled={cloudEnabled} syncStatus={syncStatus} cloudAvailable={cloudAvailable} cloudUpdatedAt={cloudUpdatedAt} recoveryAvailable={recoveryAvailable} owned={ownedCount} total={allStones.length} favorite={favoriteCount} customCount={customStones.length} onCloudBackup={backupToCloud} onCloudRestore={restoreFromCloud} onRecoveryRestore={restoreLocalRecovery} onExport={exportData} onImport={() => importRef.current?.click()} onExportCustom={exportCustomStones} onImportCustom={() => customImportRef.current?.click()} onExportCorrections={exportCorrections} onImportCorrections={() => correctionsImportRef.current?.click()} onInstall={install} onAdd={() => setNewStoneOpen(true)} onReset={async () => { if (confirm("确定清空收藏记录吗？操作前会保留一个本机恢复点，云端备份不会被删除。")) { await saveRecoveryPoint("清空前", collection, customStones); setRecoveryAvailable(true); setCollection({}); setToast("收藏记录已清空，可从本机恢复点找回"); } }} />}
 
       <nav className="bottom-nav" aria-label="主要导航">
         <NavButton active={nav === "catalog"} icon="◇" label="图鉴" onClick={() => setNav("catalog")} />
@@ -467,8 +543,10 @@ export function PrismAtlas({ user, cloudEnabled = true }: { user: SignedInUser |
       </nav>
 
       <input ref={importRef} type="file" accept="application/json" hidden onChange={importData} />
+      <input ref={customImportRef} type="file" accept="application/json" hidden onChange={importCustomStones} />
+      <input ref={correctionsImportRef} type="file" accept="application/json" hidden onChange={importCorrections} />
       {selected && <DetailSheet stone={selected} record={collection[selected.id]} onClose={() => setSelected(null)} onUpdate={(patch) => updateRecord(selected.id, patch)} onDeleteCustom={() => { setCustomStones((items) => items.filter((s) => s.id !== selected.id)); setSelected(null); setToast("自定义条目已删除"); }} />}
-      {newStoneOpen && <NewStoneSheet onClose={() => setNewStoneOpen(false)} onSave={(stone) => { setCustomStones((items) => [...items, stone]); setNewStoneOpen(false); setToast("已添加自定义棱石"); }} />}
+      {newStoneOpen && <NewStoneSheet onClose={() => setNewStoneOpen(false)} onSave={(stone) => { setCustomStones((items) => mergeCustomStones([stone], items)); setNewStoneOpen(false); setQuery(""); setTypes(["custom"]); setSelectedSeasons([]); setStatus("all"); setNav("catalog"); setSelected(stone); setToast("已添加并打开自定义棱石"); }} />}
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   );
@@ -534,7 +612,7 @@ function MissingView({ stones, collection, onOpen, onCopy }: { stones: Stone[]; 
   return <section className="view-page"><div className="view-title"><p>WISHLIST</p><h2>缺少清单</h2><span>按编号整理，交换和补齐收藏会更轻松。</span></div><button className="primary-action" onClick={onCopy}>复制全部缺少编号</button><div className="compact-list">{missing.slice(0, 300).map((stone) => <button key={stone.id} onClick={() => onOpen(stone)}><span className={`category-glyph type-${stone.type}`}>{TYPE_GLYPHS[stone.type]}</span><div><strong>{shownCode(stone, collection[stone.id])}</strong><p>{shownName(stone, collection[stone.id])}</p></div><span>›</span></button>)}</div>{missing.length > 300 && <p className="list-note">为保持手机流畅，这里先显示前 300 项；图鉴页可以查看全部。</p>}</section>;
 }
 
-function SettingsView({ user, cloudEnabled, syncStatus, cloudAvailable, cloudUpdatedAt, recoveryAvailable, owned, total, favorite, onCloudBackup, onCloudRestore, onRecoveryRestore, onExport, onImport, onInstall, onAdd, onReset }: {
+function SettingsView({ user, cloudEnabled, syncStatus, cloudAvailable, cloudUpdatedAt, recoveryAvailable, owned, total, favorite, customCount, onCloudBackup, onCloudRestore, onRecoveryRestore, onExport, onImport, onExportCustom, onImportCustom, onExportCorrections, onImportCorrections, onInstall, onAdd, onReset }: {
   user: SignedInUser | null;
   cloudEnabled: boolean;
   syncStatus: "local" | "syncing" | "synced" | "error";
@@ -544,11 +622,16 @@ function SettingsView({ user, cloudEnabled, syncStatus, cloudAvailable, cloudUpd
   owned: number;
   total: number;
   favorite: number;
+  customCount: number;
   onCloudBackup: () => void;
   onCloudRestore: () => void;
   onRecoveryRestore: () => void;
   onExport: () => void;
   onImport: () => void;
+  onExportCustom: () => void;
+  onImportCustom: () => void;
+  onExportCorrections: () => void;
+  onImportCorrections: () => void;
   onInstall: () => void;
   onAdd: () => void;
   onReset: () => void;
@@ -565,10 +648,14 @@ function SettingsView({ user, cloudEnabled, syncStatus, cloudAvailable, cloudUpd
         <a href="/signout-with-chatgpt?return_to=%2F"><span>↪</span><div><b>退出云端备份账号</b><small>{user.email}</small></div><i>›</i></a>
       </> : <a href="/signin-with-chatgpt?return_to=%2F"><span>☁</span><div><b>启用可选云端备份</b><small>仅在你点击时备份或恢复</small></div><i>›</i></a>)}
       <button onClick={onInstall}><span>⌂</span><div><b>安装到手机桌面</b><small>核心程序与图鉴目录支持离线打开</small></div><i>›</i></button>
-      <button onClick={onExport}><span>⇩</span><div><b>导出收藏备份</b><small>保存勾选、数量、备注和自定义条目</small></div><i>›</i></button>
-      <button onClick={onImport}><span>⇧</span><div><b>导入收藏备份</b><small>兼容之前导出的备份文件</small></div><i>›</i></button>
+      <button onClick={onExport}><span>⇩</span><div><b>导出完整设备备份</b><small>收藏、日期、备注、订正、自定义条目和图片全部保存</small></div><i>›</i></button>
+      <button onClick={onImport}><span>⇧</span><div><b>导入完整设备备份</b><small>与当前数据安全合并，兼容旧版备份</small></div><i>›</i></button>
       <button onClick={onRecoveryRestore}><span>↶</span><div><b>恢复上一份本机记录</b><small>{recoveryAvailable ? "可撤回导入、恢复或误清空" : "使用一段时间后自动生成恢复点"}</small></div><i>›</i></button>
-      <button onClick={onAdd}><span>＋</span><div><b>添加自定义棱石</b><small>补录图鉴之外的版本</small></div><i>›</i></button>
+      <button onClick={onAdd}><span>＋</span><div><b>添加自定义棱石</b><small>可选择颜色、季次并上传图片</small></div><i>›</i></button>
+      <button onClick={onExportCustom}><span>◇</span><div><b>导出自定义棱石</b><small>当前 {customCount} 条，可单独分享给别人</small></div><i>›</i></button>
+      <button onClick={onImportCustom}><span>◆</span><div><b>导入自定义棱石</b><small>从别人或另一台设备的文件中合并</small></div><i>›</i></button>
+      <button onClick={onExportCorrections}><span>✎</span><div><b>导出名称订正记录</b><small>只分享手动改过的编号和名称</small></div><i>›</i></button>
+      <button onClick={onImportCorrections}><span>✓</span><div><b>导入并应用名称订正</b><small>一键使用别人整理过的订正记录</small></div><i>›</i></button>
     </div>
     <button className="danger-action" onClick={onReset}>清空收藏记录</button>
     <p className="privacy-note">{cloudEnabled ? "本机数据不会因为云端失败而被清空。" : "此版本不会把收藏上传到服务器。"} 换机或卸载前仍建议导出备份文件。</p>
@@ -576,9 +663,59 @@ function SettingsView({ user, cloudEnabled, syncStatus, cloudAvailable, cloudUpd
   </section>;
 }
 
+async function prepareCustomImage(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+  const source = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const element = new Image();
+    element.onload = () => resolve(element);
+    element.onerror = () => reject(new Error("invalid image"));
+    element.src = objectUrl;
+  });
+  let maximum = 900;
+  const canvas = document.createElement("canvas");
+  let dataUrl = "";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const scale = Math.min(1, maximum / Math.max(source.naturalWidth, source.naturalHeight));
+    canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
+    canvas.getContext("2d")?.drawImage(source, 0, 0, canvas.width, canvas.height);
+    dataUrl = canvas.toDataURL("image/webp", Math.max(0.48, 0.78 - attempt * 0.07));
+    if (dataUrl.length <= 280_000) break;
+    maximum *= 0.78;
+  }
+  URL.revokeObjectURL(objectUrl);
+  return dataUrl;
+}
+
 function NewStoneSheet({ onClose, onSave }: { onClose: () => void; onSave: (stone: Stone) => void }) {
-  const [code, setCode] = useState(""); const [name, setName] = useState(""); const [season, setSeason] = useState("");
-  return <div className="sheet-backdrop"><section className="detail-sheet small" role="dialog" aria-modal="true"><div className="sheet-handle" /><button className="sheet-close" onClick={onClose}>×</button><div className="detail-title"><div><span>CUSTOM ENTRY</span><h2>添加自定义棱石</h2></div></div><div className="form-grid"><label className="wide">棱石编号<input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例如 PR-001" /></label><label className="wide">衣服或棱石名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="输入名称" /></label><label className="wide">季次<input value={season} onChange={(e) => setSeason(e.target.value)} placeholder="例如 Season 1" /></label></div><button className="primary-action" disabled={!code.trim() || !name.trim()} onClick={() => onSave({ id: `custom-${Date.now()}`, type: "custom", code: code.trim(), name: name.trim(), seasons: season.trim() ? [season.trim()] : [], image: "", wikiFile: "", available: false, custom: true })}>保存条目</button></section></div>;
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [season, setSeason] = useState("未知");
+  const [stoneType, setStoneType] = useState("unknown");
+  const [image, setImage] = useState("");
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const chooseImage = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setImageBusy(true);
+    setImageError("");
+    try { setImage(await prepareCustomImage(file)); }
+    catch { setImageError("无法读取这张图片，请换一张 PNG、JPG 或 WebP"); }
+    finally { setImageBusy(false); }
+  };
+  const save = () => onSave({
+    id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: stoneType,
+    code: code.trim(),
+    name: name.trim() || "未命名棱石",
+    seasons: [season.trim() || "未知"],
+    image,
+    wikiFile: "",
+    available: false,
+    custom: true,
+  });
+  return <div className="sheet-backdrop"><section className="detail-sheet small" role="dialog" aria-modal="true"><div className="sheet-handle" /><button className="sheet-close" onClick={onClose}>×</button><div className="detail-title"><div><span>CUSTOM ENTRY</span><h2>添加自定义棱石</h2></div></div>{image && <div className="custom-image-preview"><img src={image} alt="自定义棱石预览" /><button onClick={() => setImage("")}>移除图片</button></div>}<div className="form-grid"><label className="wide">棱石图片<input type="file" accept="image/*" onChange={chooseImage} /></label><label className="wide">棱石编号<input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例如 PR-001" /></label><label className="wide">衣服或棱石名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="不知道可留空，保存为未命名棱石" /></label><label>颜色分类<select value={stoneType} onChange={(e) => setStoneType(e.target.value)}>{STONE_TYPES.map((value) => <option key={value} value={value}>{TYPE_LABELS[value]}</option>)}</select></label><label>季次<input value={season} onChange={(e) => setSeason(e.target.value)} placeholder="未知" /></label></div>{imageError && <p className="form-error">{imageError}</p>}<p className="form-hint">保存后会自动归入“自定义”，同时按你选择的颜色和季次参与筛选。</p><button className="primary-action" disabled={!code.trim() || imageBusy} onClick={save}>{imageBusy ? "正在处理图片…" : "保存并查看条目"}</button></section></div>;
 }
 
 function EmptyState({ symbol, title, text }: { symbol: string; title: string; text: string }) { return <div className="empty-state"><span>{symbol}</span><strong>{title}</strong><p>{text}</p></div>; }
