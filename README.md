@@ -57,6 +57,9 @@ npm run build:pages
 - `public/prism-stones/`：离线图鉴图片
 - `public/manifest.webmanifest`：PWA 安装信息
 - `public/sw.js`：离线缓存程序
+- `scripts/prism_stone_downloader.py`：从资料源生成完整图鉴清单的采集脚本
+- `scripts/update-catalog-codes-from-manifest.mjs`：逐行校验并更新编号映射
+- `scripts/catalog-code-corrections.json`：已确认的编号订正记录
 - `db/`、`drizzle/`：可选云端同步的数据结构与迁移
 
 ## 更新记录

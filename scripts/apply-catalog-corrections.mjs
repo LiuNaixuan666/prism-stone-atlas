@@ -4,20 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const catalogPath = path.join(projectRoot, "public", "data", "prism-stones.json");
-const verifiedCodes = new Map([
-  ["85c0b41c1c05", "P-ち01★"],
-  ["603efc68486a", "P-り02★"],
-  ["7db8cecabca4", "P-ぷ 01★"],
-  ["18373fb7e38b", "P-ウ07★"],
-  ["814872477c24", "P-ウ11★"],
-  ["3eea36c61178", "P-ウ06★"],
-  ["db989d09a2c5", "P-シ08★"],
-  ["82ce75ee2978", "P-ウ17★"],
-  ["bf080bc6c3d5", "P-シ19★"],
-  ["bbf5782148d1", "P-ウ21★"],
-  ["7cd79c2e471a", "P-シ20★"],
-  ["3b7458f787f4", "P-ウ20★"],
-]);
+const verifiedCodes = new Map(Object.entries(JSON.parse(
+  await readFile(path.join(projectRoot, "scripts", "catalog-code-corrections.json"), "utf8"),
+)));
 
 const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
 let changed = 0;

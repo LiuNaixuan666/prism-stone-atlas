@@ -96,10 +96,11 @@ test("PWA metadata and service worker keep the application shell offline", async
   assert.match(app, /prism-atlas-local/);
 });
 
-test("catalog images are bundled locally for reliable and offline viewing", async () => {
-  const [catalogText, imageFiles] = await Promise.all([
+test("catalog images and verified source codes are bundled locally", async () => {
+  const [catalogText, imageFiles, correctionsText] = await Promise.all([
     readFile(new URL("../public/data/prism-stones.json", import.meta.url), "utf8"),
     readdir(new URL("../public/prism-stones/", import.meta.url)),
+    readFile(new URL("../scripts/catalog-code-corrections.json", import.meta.url), "utf8"),
   ]);
   const catalog = JSON.parse(catalogText);
   const available = catalog.filter((stone) => stone.image);
@@ -111,8 +112,15 @@ test("catalog images are bundled locally for reliable and offline viewing", asyn
     assert.equal(bundled.has(stone.image.replace(/^prism-stones\//, "")), true, stone.image);
   }
   const corrected = Object.fromEntries(catalog.map((stone) => [stone.id, stone.code]));
+  const parserCorrections = JSON.parse(correctionsText);
+  assert.equal(Object.keys(parserCorrections).length, 57);
   assert.equal(corrected["85c0b41c1c05"], "P-ち01★");
   assert.equal(corrected["3b7458f787f4"], "P-ウ20★");
+  assert.equal(corrected["a1d28db185c9"], "P-シ04★");
+  assert.equal(corrected["0db1d713e987"], "P-シ05★");
+  assert.equal(corrected["5ca59be12dca"], "P-シ06★");
+  assert.equal(corrected["664ff8a175d0"], "P-シ07★");
+  assert.equal(corrected["ce600e30f1d5"], "B07-S03★");
 });
 
 test("GitHub Pages build uses the repository base path and disables cloud UI", async () => {
